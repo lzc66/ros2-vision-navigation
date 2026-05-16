@@ -67,6 +67,11 @@ class BrainNode(Node):
 
         self._lock_timer = None
         self._escape_timer = None
+        self._escape_done_timer = None
+        self._grab_timer = None
+        self._drop_timer = None
+        self._heal_timer = None
+        self._heal_zone = RED_DROP_ZONE
         self._last_tx = None; self._last_ty = None
 
         self.get_logger().info('Brain ready. EXPLORE (ESCAPE + Dynamic Obstacle)')
@@ -164,9 +169,12 @@ class BrainNode(Node):
         cname = 'RED' if self._target_type < 1.5 else 'BLUE/BRN'
         self.get_logger().info(f'[GRAB] Loading {cname} cargo... (3s)')
         self._stop_robot()
-        self.create_timer(GRAB_DURATION, self._grab_done, one_shot=True)
+        self._grab_timer = self.create_timer(GRAB_DURATION, self._grab_done)
 
     def _grab_done(self):
+        if self._grab_timer is not None:
+            self._grab_timer.cancel()
+            self._grab_timer = None
         self.get_logger().info('[GRAB] Cargo loaded! Returning to base.')
         self._start_return()
 
@@ -185,9 +193,12 @@ class BrainNode(Node):
         cname = 'RED' if self._target_type < 1.5 else 'BLUE/BRN'
         self.get_logger().info(f'[DROP] Unloading {cname} cargo... (3s)')
         self._stop_robot()
-        self.create_timer(DROP_DURATION, self._drop_done, one_shot=True)
+        self._drop_timer = self.create_timer(DROP_DURATION, self._drop_done)
 
     def _drop_done(self):
+        if self._drop_timer is not None:
+            self._drop_timer.cancel()
+            self._drop_timer = None
         self.get_logger().info('[DROP] Done! Starting ESCAPE turn...')
         self._start_escape()
 
@@ -198,7 +209,7 @@ class BrainNode(Node):
         self._escape_start_time = time.time()
         # High-frequency timer to defeat velocity_smoother 1s timeout
         self._escape_timer = self.create_timer(0.1, self._publish_escape_twist)
-        self.create_timer(ESCAPE_DURATION, self._escape_done, one_shot=True)
+        self._escape_done_timer = self.create_timer(ESCAPE_DURATION, self._escape_done)
 
     def _publish_escape_twist(self):
         if self.state != 'ESCAPE':
@@ -210,6 +221,9 @@ class BrainNode(Node):
         self.cmd_pub.publish(twist)
 
     def _escape_done(self):
+        if self._escape_done_timer is not None:
+            self._escape_done_timer.cancel()
+            self._escape_done_timer = None
         if self._escape_timer is not None:
             self._escape_timer.cancel()
             self._escape_timer = None
@@ -260,9 +274,17 @@ class BrainNode(Node):
             self._start_explore()
         elif self.state == 'RETURN':
             is_red = self._target_type < 1.5
-            zone = RED_DROP_ZONE if is_red else BLUE_DROP_ZONE
-            self.get_logger().info('[HEAL] RETURN failed, retrying in 3s...')
-            self.create_timer(3.0, lambda: self._send_nav_goal(zone[0], zone[1]), one_shot=True)
+            self._heal_zone = RED_DROP_ZONE if is_red else BLUE_DROP_ZONE
+            self.get_logger().info(f'[HEAL] RETURN failed, retrying in 3s...')
+            if self._heal_timer is not None:
+                self._heal_timer.cancel()
+            self._heal_timer = self.create_timer(3.0, self._heal_retry_cb)
+
+    def _heal_retry_cb(self):
+        if self._heal_timer is not None:
+            self._heal_timer.cancel()
+            self._heal_timer = None
+        self._send_nav_goal(self._heal_zone[0], self._heal_zone[1])
 
 
 def main():

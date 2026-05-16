@@ -31,7 +31,8 @@ def generate_launch_description():
     # Gazebo headless (WSL2: no gzclient for GPU stability)
     gzserver = ExecuteProcess(
         cmd=['gzserver', '--verbose', world_file,
-             '-s', 'libgazebo_ros_init.so', '-s', 'libgazebo_ros_factory.so'],
+             '-s', 'libgazebo_ros_init.so', '-s', 'libgazebo_ros_factory.so',
+             '-s', 'libgazebo_ros_state.so'],
         output='screen'
     )
 
