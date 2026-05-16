@@ -15,7 +15,7 @@ NAV2_PARAMS = os.path.join(PKG_DIR, 'params', 'nav2_params.yaml')
 WS_DIR = '/home/lzc/ros2_ws'
 
 MAX_VEL_X_MIN, MAX_VEL_X_MAX = 0.20, 0.60
-INFLATION_MIN, INFLATION_MAX = 0.10, 0.20
+INFLATION_MIN, INFLATION_MAX = 0.23, 0.40
 
 MAX_TIME = 90.0
 CMD_VEL_TIMEOUT = 12.0
@@ -318,7 +318,7 @@ def run_iteration(iter_num, max_vel_x, inflation_radius) -> IterResult:
 
 def heuristic_next_params(iter_num, all_results):
     if iter_num == 1:
-        return 0.30, 0.15
+        return 0.30, 0.25
     best = max(all_results, key=lambda r: r.score)
     last = all_results[-1]
     candidates = []

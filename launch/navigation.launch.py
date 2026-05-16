@@ -28,16 +28,15 @@ def generate_launch_description():
 
     use_sim_time = SetParameter(name='use_sim_time', value=True)
 
-    # Gazebo server + client
+    # Gazebo headless (WSL2: no gzclient for GPU stability)
     gzserver = ExecuteProcess(
         cmd=['gzserver', '--verbose', world_file,
              '-s', 'libgazebo_ros_init.so', '-s', 'libgazebo_ros_factory.so'],
         output='screen'
     )
-    gzclient = ExecuteProcess(cmd=['gzclient'], output='screen')
 
-    # Spawn turtlebot3 burger at z=0.0 (wheels just touch ground)
-    tb3_sdf = '/opt/ros/humble/share/turtlebot3_gazebo/models/turtlebot3_burger/model.sdf'
+    # Spawn turtlebot3 waffle (has camera for Stage 3 vision)
+    tb3_sdf = '/opt/ros/humble/share/turtlebot3_gazebo/models/turtlebot3_waffle/model.sdf'
     spawn_robot = Node(
         package='gazebo_ros', executable='spawn_entity.py',
         arguments=['-file', tb3_sdf, '-entity', 'turtlebot3',
@@ -46,7 +45,7 @@ def generate_launch_description():
     )
 
     # Load URDF for robot_state_publisher (static transforms for base_link -> sensors)
-    urdf_path = '/opt/ros/humble/share/turtlebot3_gazebo/urdf/turtlebot3_burger.urdf'
+    urdf_path = '/opt/ros/humble/share/turtlebot3_gazebo/urdf/turtlebot3_waffle.urdf'
     robot_desc = open(urdf_path, 'r').read()
 
     robot_state_pub = Node(
@@ -130,7 +129,6 @@ def generate_launch_description():
         use_sim_time,
         set_model_path,
         gzserver,
-        gzclient,
         TimerAction(period=3.0, actions=[spawn_robot]),
         TimerAction(period=5.0, actions=[robot_state_pub]),
         TimerAction(period=8.0, actions=[

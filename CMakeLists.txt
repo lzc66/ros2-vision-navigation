@@ -36,6 +36,8 @@ install(PROGRAMS
   scripts/item_spawner.py
   scripts/auto_tune_nav2.py
   scripts/generate_map.py
+  scripts/vision_node.py
+  scripts/brain_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

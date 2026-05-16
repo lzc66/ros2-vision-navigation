@@ -131,11 +131,11 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      robot_radius: 0.105
+      robot_radius: 0.22
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 12.0
-        inflation_radius: 0.15
+        inflation_radius: 0.25
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
@@ -164,13 +164,13 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_footprint
       use_sim_time: true
-      robot_radius: 0.105
+      robot_radius: 0.22
       resolution: 0.05
       track_unknown_space: true
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 12.0
-        inflation_radius: 0.15
+        inflation_radius: 0.25
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
