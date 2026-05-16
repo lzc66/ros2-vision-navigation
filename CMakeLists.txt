@@ -34,6 +34,8 @@ ament_target_dependencies(
 # Install Python scripts
 install(PROGRAMS
   scripts/item_spawner.py
+  scripts/auto_tune_nav2.py
+  scripts/generate_map.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -48,6 +50,14 @@ install(DIRECTORY
 )
 install(DIRECTORY
   models
+  DESTINATION share/${PROJECT_NAME}
+)
+install(DIRECTORY
+  maps
+  DESTINATION share/${PROJECT_NAME}
+)
+install(DIRECTORY
+  params
   DESTINATION share/${PROJECT_NAME}
 )
 

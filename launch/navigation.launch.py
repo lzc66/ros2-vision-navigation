@@ -1,0 +1,142 @@
+import os
+from launch import LaunchDescription
+from launch.actions import (
+    ExecuteProcess, SetEnvironmentVariable, TimerAction, IncludeLaunchDescription
+)
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch_ros.actions import Node, SetParameter
+from ament_index_python.packages import get_package_share_directory
+
+
+def generate_launch_description():
+    pkg_share = get_package_share_directory('project')
+
+    # Model paths
+    model_path = os.path.join(pkg_share, 'models')
+    sys_model_path = os.path.expanduser('~/.gazebo/models')
+    tb3_model_path = '/opt/ros/humble/share/turtlebot3_gazebo/models'
+    env_model_path = os.environ.get('GAZEBO_MODEL_PATH', '')
+    full_model_path = f'{model_path}:{sys_model_path}:{tb3_model_path}'
+    if env_model_path:
+        full_model_path += f':{env_model_path}'
+
+    set_model_path = SetEnvironmentVariable('GAZEBO_MODEL_PATH', full_model_path)
+
+    world_file = os.path.join(pkg_share, 'worlds', 'turtlebot3_world.world')
+    map_file = os.path.join(pkg_share, 'maps', 'map.yaml')
+    nav2_params = os.path.join(pkg_share, 'params', 'nav2_params.yaml')
+
+    use_sim_time = SetParameter(name='use_sim_time', value=True)
+
+    # Gazebo server + client
+    gzserver = ExecuteProcess(
+        cmd=['gzserver', '--verbose', world_file,
+             '-s', 'libgazebo_ros_init.so', '-s', 'libgazebo_ros_factory.so'],
+        output='screen'
+    )
+    gzclient = ExecuteProcess(cmd=['gzclient'], output='screen')
+
+    # Spawn turtlebot3 burger at z=0.0 (wheels just touch ground)
+    tb3_sdf = '/opt/ros/humble/share/turtlebot3_gazebo/models/turtlebot3_burger/model.sdf'
+    spawn_robot = Node(
+        package='gazebo_ros', executable='spawn_entity.py',
+        arguments=['-file', tb3_sdf, '-entity', 'turtlebot3',
+                   '-x', '-2.0', '-y', '-0.5', '-z', '0.1', '-unpause'],
+        output='screen',
+    )
+
+    # Load URDF for robot_state_publisher (static transforms for base_link -> sensors)
+    urdf_path = '/opt/ros/humble/share/turtlebot3_gazebo/urdf/turtlebot3_burger.urdf'
+    robot_desc = open(urdf_path, 'r').read()
+
+    robot_state_pub = Node(
+        package='robot_state_publisher', executable='robot_state_publisher',
+        parameters=[{'use_sim_time': True, 'robot_description': robot_desc}],
+        output='screen',
+    )
+
+    # Nav2 bringup nodes
+    map_server = Node(
+        package='nav2_map_server', executable='map_server',
+        parameters=[nav2_params, {'use_sim_time': True}],
+        output='screen',
+    )
+
+    amcl = Node(
+        package='nav2_amcl', executable='amcl',
+        name='amcl',
+        parameters=[nav2_params],
+        output='screen',
+    )
+
+    lifecycle_manager_localization = Node(
+        package='nav2_lifecycle_manager', executable='lifecycle_manager',
+        name='lifecycle_manager_localization',
+        parameters=[{'use_sim_time': True,
+                     'node_names': ['map_server', 'amcl'],
+                     'autostart': True}],
+        output='screen',
+    )
+
+    planner_server = Node(
+        package='nav2_planner', executable='planner_server',
+        parameters=[nav2_params],
+        output='screen',
+    )
+
+    controller_server = Node(
+        package='nav2_controller', executable='controller_server',
+        parameters=[nav2_params],
+        output='screen',
+    )
+
+    bt_navigator = Node(
+        package='nav2_bt_navigator', executable='bt_navigator',
+        parameters=[nav2_params],
+        output='screen',
+    )
+
+    behavior_server = Node(
+        package='nav2_behaviors', executable='behavior_server',
+        parameters=[nav2_params],
+        output='screen',
+    )
+
+    waypoint_follower = Node(
+        package='nav2_waypoint_follower', executable='waypoint_follower',
+        parameters=[nav2_params],
+        output='screen',
+    )
+
+    velocity_smoother = Node(
+        package='nav2_velocity_smoother', executable='velocity_smoother',
+        parameters=[nav2_params],
+        output='screen',
+    )
+
+    lifecycle_manager_navigation = Node(
+        package='nav2_lifecycle_manager', executable='lifecycle_manager',
+        name='lifecycle_manager_navigation',
+        parameters=[{'use_sim_time': True,
+                     'node_names': [
+                         'planner_server', 'controller_server', 'bt_navigator',
+                         'behavior_server', 'waypoint_follower', 'velocity_smoother'
+                     ],
+                     'autostart': True}],
+        output='screen',
+    )
+
+    return LaunchDescription([
+        use_sim_time,
+        set_model_path,
+        gzserver,
+        gzclient,
+        TimerAction(period=3.0, actions=[spawn_robot]),
+        TimerAction(period=5.0, actions=[robot_state_pub]),
+        TimerAction(period=8.0, actions=[
+            map_server, amcl, lifecycle_manager_localization,
+            planner_server, controller_server, bt_navigator,
+            behavior_server, waypoint_follower, velocity_smoother,
+            lifecycle_manager_navigation,
+        ]),
+    ])
