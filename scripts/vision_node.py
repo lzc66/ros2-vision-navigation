@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Visual perception: HSV red-filtering + contour centroid tracking."""
+"""
+Visual Perception: dual-color (red + blue) detection with relative metrics.
+
+Publishes geometry_msgs/Point on /target_object:
+  x = error_x / (img_w/2)   (normalized [-1, 1], 0=center)
+  y = area_ratio             (0..1, fraction of total image)
+  z = 1.0 (red) or 2.0 (blue)
+"""
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
@@ -14,58 +21,79 @@ class VisionNode(Node):
         super().__init__('vision_node')
         self.bridge = CvBridge()
         self.sub = self.create_subscription(Image, '/camera/image_raw', self.callback, 10)
-        self.pub = self.create_publisher(Point, '/red_object', 10)
-        self.get_logger().info('Vision Node ready. Listening on /camera/image_raw')
+        self.pub = self.create_publisher(Point, '/target_object', 10)
+        self.get_logger().info('Vision ready: Red + Blue + Brown/Orange, relative coords')
 
-        self.min_area = 200  # noise threshold (pixels)
+        self.min_area_ratio = 0.001  # 0.1% of image = noise floor
+
+    def _build_mask(self, hsv, ranges):
+        """Combine multiple HSV range tuples into one mask."""
+        mask = None
+        for lower, upper in ranges:
+            m = cv2.inRange(hsv, np.array(lower), np.array(upper))
+            mask = m if mask is None else cv2.bitwise_or(mask, m)
+        return mask
 
     def callback(self, msg):
         try:
             frame = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
         except Exception as e:
-            self.get_logger().error(f'cv_bridge error: {e}')
+            self.get_logger().error(f'cv_bridge: {e}')
             return
 
+        h, w = frame.shape[:2]
+        total_px = h * w
+        half_w = w / 2.0
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        # Red spans TWO ranges around 0/180
-        lower1 = np.array([0, 80, 80])
-        upper1 = np.array([10, 255, 255])
-        lower2 = np.array([170, 80, 80])
-        upper2 = np.array([180, 255, 255])
+        # ---- Red: two ranges around 0/180 ----
+        red_ranges = [([0, 80, 80], [10, 255, 255]),
+                      ([170, 80, 80], [180, 255, 255])]
+        red_mask = self._build_mask(hsv, red_ranges)
 
-        mask1 = cv2.inRange(hsv, lower1, upper1)
-        mask2 = cv2.inRange(hsv, lower2, upper2)
-        mask = cv2.bitwise_or(mask1, mask2)
+        # ---- Blue: single range ----
+        blue_ranges = [([100, 80, 80], [130, 255, 255])]
+        blue_mask = self._build_mask(hsv, blue_ranges)
 
-        # Morphological cleanup
-        mask = cv2.erode(mask, None, iterations=2)
-        mask = cv2.dilate(mask, None, iterations=2)
+        # ---- Brown/Orange (barrel): routes to blue zone ----
+        brown_ranges = [([10, 80, 50], [30, 255, 200])]
+        brown_mask = self._build_mask(hsv, brown_ranges)
 
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            # No red object visible
+        best_type = 0.0
+        best_area = 0.0
+        best_cx = 0.0
+
+        for mask, z_type in [(red_mask, 1.0), (blue_mask, 2.0), (brown_mask, 2.0)]:
+            if mask is None:
+                continue
+            mask = cv2.erode(mask, None, iterations=2)
+            mask = cv2.dilate(mask, None, iterations=2)
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                continue
+            largest = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(largest)
+            area_ratio = area / total_px
+            if area_ratio < self.min_area_ratio:
+                continue
+            if area > best_area:
+                best_area = area
+                best_type = z_type
+                M = cv2.moments(largest)
+                if M['m00'] > 0:
+                    best_cx = M['m10'] / M['m00']
+
+        if best_type == 0.0:
             return
 
-        largest = max(contours, key=cv2.contourArea)
-        area = cv2.contourArea(largest)
-
-        if area < self.min_area:
-            return
-
-        M = cv2.moments(largest)
-        if M['m00'] == 0:
-            return
-
-        cx = int(M['m10'] / M['m00'])
-        cy = int(M['m01'] / M['m00'])
-        img_w = frame.shape[1]
-        error_x = cx - img_w / 2.0
+        # Relative error_x: normalized [-1, 1]
+        error_x_norm = (best_cx - half_w) / half_w
+        area_ratio = best_area / total_px
 
         msg_out = Point()
-        msg_out.x = error_x          # horizontal offset (pixels)
-        msg_out.y = area             # contour area (pixels^2)
-        msg_out.z = float(cx)        # centroid x for debugging
+        msg_out.x = error_x_norm       # normalized horizontal offset
+        msg_out.y = area_ratio         # fraction of total image (0..1)
+        msg_out.z = best_type          # 1.0=red, 2.0=blue
         self.pub.publish(msg_out)
 
 
