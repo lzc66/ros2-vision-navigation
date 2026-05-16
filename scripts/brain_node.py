@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """
-Embodied AI Brain: Dynamic Semantic Waypoint Navigation.
+Embodied AI Brain: Continuous Logistics Loop.
 
-States:
-  EXPLORE -> random Nav2 patrol waypoints
-  LOCK    -> compute red-box MAP coords via camera projection,
-             send dynamic Nav2 goals every 2s (Nav2 handles obstacle avoidance)
-  RETURN  -> navigate back to spawn point
+States: EXPLORE -> LOCK -> GRAB -> RETURN -> DROP -> EXPLORE ...
+
+Stage 4 Fixes:
+  1. Approach Margin: safe_dist = max(0.2, dist - APPROACH_MARGIN) to avoid lethal cost
+  2. Goal Filtering: only re-send Nav2 goal if target drifts >0.2m
+  3. GRAB (3s load) + DROP (3s unload) states with state cache reset
 """
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
 from nav2_msgs.action import NavigateToPose
 from geometry_msgs.msg import Point, PoseWithCovarianceStamped, Twist
-import math
-import random
-import time
+import math, random, time
 
 SPAWN_X, SPAWN_Y = -2.0, -0.5
 
@@ -24,27 +23,30 @@ PATROL_POINTS = [
     (0.0, 1.8), (2.0, 0.0), (-1.5, 1.5), (0.5, -1.8)
 ]
 
-# Camera intrinsic params (Waffle Intel RealSense R200)
-CAM_FOV = 1.089       # horizontal FOV (radians)
-CAM_W = 1920.0        # image width (pixels)
-CAM_CX = CAM_W / 2.0  # 960.0
+# Camera (Waffle R200)
+CAM_FOV = 1.089
+CAM_W = 1920.0
+CAM_CX = CAM_W / 2.0
+K_DIST = 600.0
 
-# Distance estimation: K_DIST / sqrt(area)
-K_DIST = 600.0        # tunable calibration constant
+# Termination
+CAPTURE_AREA = 350000
+CENTER_THRESHOLD = 80.0
 
-# LOCK termination
-CAPTURE_AREA = 350000 # box occupies ~17% of image -> very close
-CENTER_THRESHOLD = 80.0  # pixels: object must be near image center
+# Stage 4: Approach Margin (prevent lethal-cost goal rejection)
+APPROACH_MARGIN = 0.45  # meters: stop this far in front of the box
 
-# LOCK dynamic goal update rate
-GOAL_UPDATE_INTERVAL = 2.0  # seconds
+# Stage 4: Goal Filtering
+GOAL_FILTER_EPS = 0.2   # meters: min drift to re-send Nav2 goal
+GOAL_UPDATE_PERIOD = 2.0 # seconds between projection updates
 
-# Cooldown after RETURN
-RETURN_COOLDOWN = 10.0  # seconds
+# Timing
+GRAB_DURATION = 3.0   # seconds: loading cargo
+DROP_DURATION = 3.0   # seconds: unloading cargo
+VISION_TIMEOUT = 5.0  # seconds: lost vision -> back to explore
 
 
 def quat_to_yaw(q):
-    """Convert quaternion (x,y,z,w) to yaw angle."""
     siny = 2.0 * (q.w * q.z + q.x * q.y)
     cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
     return math.atan2(siny, cosy)
@@ -54,139 +56,175 @@ class BrainNode(Node):
     def __init__(self):
         super().__init__('brain_node')
         self.state = 'EXPLORE'
+        self.round = 0  # logistics round counter
 
         # Nav2
         self.nav_client = ActionClient(self, NavigateToPose, '/navigate_to_pose')
         self._goal_handle = None
 
-        # Vision subscriber
+        # Subscribers
         self.create_subscription(Point, '/red_object', self.vision_cb, 10)
-
-        # AMCL pose subscriber
         self.create_subscription(PoseWithCovarianceStamped, '/amcl_pose', self.amcl_cb, 10)
 
-        # Robot pose (updated from AMCL)
-        self._robot_x = 0.0
-        self._robot_y = 0.0
-        self._robot_yaw = 0.0
+        # Robot pose
+        self._rx = 0.0; self._ry = 0.0; self._ryaw = 0.0
 
-        # Red object state
-        self._red_error_x = 0.0
-        self._red_area = 0.0
-        self._red_seen = False
-        self._last_vision_time = 0.0
+        # Red object
+        self._red_error_x = 0.0; self._red_area = 0.0
+        self._red_seen = False; self._last_vision_t = 0.0
 
-        # LOCK state
+        # LOCK dynamic goals
         self._lock_timer = None
-        self._return_cooldown_until = 0.0
 
-        # Velocity for emergency stop
+        # Stage 4: Goal filter cache
+        self._last_sent_tx = None
+        self._last_sent_ty = None
+
+        # CmdVel (emergency stop only)
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
-        self.get_logger().info('Brain ready. State: EXPLORE (Dynamic Semantic Nav)')
+        self.get_logger().info('Brain ready. State: EXPLORE (Continuous Logistics)')
         self._start_explore()
 
-    # === AMCL Callback ===
+    # ============ Callbacks ============
     def amcl_cb(self, msg):
-        self._robot_x = msg.pose.pose.position.x
-        self._robot_y = msg.pose.pose.position.y
-        self._robot_yaw = quat_to_yaw(msg.pose.pose.orientation)
+        self._rx = msg.pose.pose.position.x
+        self._ry = msg.pose.pose.position.y
+        self._ryaw = quat_to_yaw(msg.pose.pose.orientation)
 
-    # === Vision Callback ===
     def vision_cb(self, msg):
         self._red_error_x = msg.x
         self._red_area = msg.y
         self._red_seen = True
-        self._last_vision_time = time.time()
+        self._last_vision_t = time.time()
 
         if self.state == 'EXPLORE' and self._red_area > 2000:
-            if time.time() < self._return_cooldown_until:
-                return
             self._enter_lock()
 
-    # === Camera to Map Projection ===
+    # ============ Camera Projection (Stage 4: Approach Margin) ============
     def _project_target(self):
-        """Project red box from camera coords to MAP coordinates."""
-        error_x = self._red_error_x
+        err = self._red_error_x
         area = self._red_area
+        theta = -(err / CAM_CX) * (CAM_FOV / 2.0)
 
-        # Optical angle: negative error_x = object to the LEFT of center
-        theta = -(error_x / CAM_CX) * (CAM_FOV / 2.0)
-
-        # Distance estimate from area
         if area < 100:
-            dist = 8.0  # far away, fallback
+            raw_dist = 8.0
         else:
-            dist = K_DIST / math.sqrt(area)
+            raw_dist = K_DIST / math.sqrt(area)
 
-        # Project to map coordinates
-        tx = self._robot_x + dist * math.cos(self._robot_yaw + theta)
-        ty = self._robot_y + dist * math.sin(self._robot_yaw + theta)
-        return tx, ty, dist, theta
+        # Stage 4 Fix 1: safe approach distance (stop 0.45m in front of box)
+        safe_dist = max(0.2, raw_dist - APPROACH_MARGIN)
 
-    # === State: EXPLORE ===
+        tx = self._rx + safe_dist * math.cos(self._ryaw + theta)
+        ty = self._ry + safe_dist * math.sin(self._ryaw + theta)
+        return tx, ty, raw_dist, safe_dist, theta
+
+    # ============ EXPLORE ============
     def _start_explore(self):
+        # Reset red-object state cache
+        self._red_seen = False
+        self._red_error_x = 0.0
+        self._red_area = 0.0
+        self._last_sent_tx = None
+        self._last_sent_ty = None
+        self._lock_timer = None
+
         self.state = 'EXPLORE'
         goal = random.choice(PATROL_POINTS)
-        self.get_logger().info(f'[EXPLORE] Patrol -> ({goal[0]:.1f}, {goal[1]:.1f})')
+        self.round += 1
+        self.get_logger().info(f'[EXPLORE #{self.round}] Patrol -> ({goal[0]:.1f}, {goal[1]:.1f})')
         self._send_nav_goal(goal[0], goal[1])
 
-    # === State: LOCK (Dynamic Semantic Waypoint) ===
+    # ============ LOCK ============
     def _enter_lock(self):
         if self.state == 'LOCK':
             return
         self.state = 'LOCK'
         self.get_logger().info('[LOCK] Red object detected! Starting dynamic semantic tracking...')
 
-        # Stop any current Nav2 goal (will be replaced by our dynamic goal)
         if self._goal_handle is not None:
             self._goal_handle.cancel_goal_async()
             self._goal_handle = None
 
-        # Start dynamic goal update timer
-        self._lock_timer = self.create_timer(GOAL_UPDATE_INTERVAL, self._lock_update)
+        # Reset goal filter cache for new target
+        self._last_sent_tx = None
+        self._last_sent_ty = None
+
+        self._lock_timer = self.create_timer(GOAL_UPDATE_PERIOD, self._lock_update)
 
     def _lock_update(self):
-        """Periodic: project target -> send Nav2 goal with obstacle avoidance."""
         if self.state != 'LOCK':
             return
 
-        # Timeout: vision lost too long
-        if time.time() - self._last_vision_time > 5.0:
-            self.get_logger().info('[LOCK] Vision lost, returning to EXPLORE')
+        # Vision timeout
+        if time.time() - self._last_vision_t > VISION_TIMEOUT:
+            self.get_logger().info('[LOCK] Vision lost, back to EXPLORE')
             self._lock_timer.cancel()
-            self._lock_timer = None
             self._start_explore()
             return
 
-        error_x = self._red_error_x
+        err = self._red_error_x
         area = self._red_area
 
-        # Check termination: close enough AND centered
-        if area > CAPTURE_AREA and abs(error_x) < CENTER_THRESHOLD:
-            self.get_logger().info(f'[TARGET ACQUIRED] Area={area:.0f} err={error_x:.0f}px')
+        # Termination check
+        if area > CAPTURE_AREA and abs(err) < CENTER_THRESHOLD:
+            self.get_logger().info(f'[TARGET ACQUIRED] Area={area:.0f} err={err:.0f}px')
             self._lock_timer.cancel()
-            self._lock_timer = None
-            self._start_return()
+            self._enter_grab()
             return
 
-        # Project target to map
-        tx, ty, dist, theta = self._project_target()
-        self.get_logger().info(
-            f'[LOCK] err={error_x:.0f}px area={area:.0f} '
-            f'dist={dist:.2f}m theta={theta:.3f}rad -> target_map=({tx:.2f}, {ty:.2f})'
-        )
+        # Project target
+        tx, ty, raw_dist, safe_dist, theta = self._project_target()
 
-        # Send dynamic Nav2 goal (planner handles obstacle avoidance!)
+        # Stage 4 Fix 2: Goal filtering — only send if drifted >0.2m
+        if self._last_sent_tx is not None:
+            drift = math.sqrt((tx - self._last_sent_tx)**2 + (ty - self._last_sent_ty)**2)
+            if drift < GOAL_FILTER_EPS:
+                return  # target stable, skip re-send
+
+        self._last_sent_tx = tx
+        self._last_sent_ty = ty
+
+        self.get_logger().info(
+            f'[LOCK] err={err:.0f}px area={area:.0f} raw_dist={raw_dist:.2f}m '
+            f'safe_dist={safe_dist:.2f}m theta={theta:.3f}rad -> ({tx:.2f}, {ty:.2f})'
+        )
         self._send_nav_goal(tx, ty)
 
-    # === State: RETURN ===
+    # ============ GRAB (Stage 4 Fix 3: loading pause) ============
+    def _enter_grab(self):
+        self.state = 'GRAB'
+        self.get_logger().info('[GRAB] Loading cargo... (3s)')
+        self._stop_robot()
+        self.create_timer(GRAB_DURATION, self._grab_done, one_shot=True)
+
+    def _grab_done(self):
+        self.get_logger().info('[GRAB] Cargo loaded! Returning to base.')
+        self._start_return()
+
+    # ============ RETURN ============
     def _start_return(self):
         self.state = 'RETURN'
         self.get_logger().info(f'[RETURN] Navigating to spawn ({SPAWN_X:.1f}, {SPAWN_Y:.1f})')
         self._send_nav_goal(SPAWN_X, SPAWN_Y)
 
-    # === Shared Nav2 Goal Sender ===
+    # ============ DROP (Stage 4 Fix 3: unloading pause) ============
+    def _enter_drop(self):
+        self.state = 'DROP'
+        self.get_logger().info('[DROP] Unloading cargo... (3s)')
+        self._stop_robot()
+        self.create_timer(DROP_DURATION, self._drop_done, one_shot=True)
+
+    def _drop_done(self):
+        self.get_logger().info('[DROP] Cargo unloaded. Starting next round!')
+        self._start_explore()
+
+    # ============ Helpers ============
+    def _stop_robot(self):
+        stop = Twist()
+        stop.linear.x = 0.0; stop.angular.z = 0.0
+        self.cmd_pub.publish(stop)
+
     def _send_nav_goal(self, gx, gy):
         self.nav_client.wait_for_server()
         nav_goal = NavigateToPose.Goal()
@@ -194,7 +232,6 @@ class BrainNode(Node):
         nav_goal.pose.pose.position.x = gx
         nav_goal.pose.pose.position.y = gy
         nav_goal.pose.pose.orientation.w = 1.0
-
         future = self.nav_client.send_goal_async(nav_goal)
         future.add_done_callback(self._nav_response_cb)
 
@@ -208,17 +245,16 @@ class BrainNode(Node):
     def _nav_result_cb(self, future):
         result = future.result()
         status = result.status if result else -1
-        if status != 4:  # 4 = SUCCEEDED
-            if self.state in ('EXPLORE', 'LOCK'):
-                pass  # will retry
-            return
+        if status != 4:
+            return  # 4 = SUCCEEDED; ignore aborts/cancels
+
         if self.state == 'EXPLORE':
             self.get_logger().info('[EXPLORE] Waypoint reached, next...')
             self._start_explore()
         elif self.state == 'RETURN':
-            self.get_logger().info('[RETURN] Arrived at spawn! Mission complete.')
-            self._return_cooldown_until = time.time() + RETURN_COOLDOWN
-            self._start_explore()
+            self.get_logger().info('[RETURN] Arrived at spawn.')
+            self._enter_drop()
+        # In LOCK, the timer handles goal completion
 
 
 def main():
