@@ -33,6 +33,11 @@ class DynamicObstacle(Node):
       <inertial><mass>100.0</mass><inertia><ixx>10</ixx><iyy>10</iyy><izz>10</izz></inertia></inertial>
       <collision name="c">
         <geometry><cylinder><radius>0.2</radius><length>1.5</length></cylinder></geometry>
+        <surface>
+          <contact>
+            <collide_without_contact>true</collide_without_contact>
+          </contact>
+        </surface>
       </collision>
       <visual name="v">
         <geometry><cylinder><radius>0.2</radius><length>1.5</length></cylinder></geometry>
