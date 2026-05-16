@@ -18,7 +18,7 @@ import math, random, time
 
 SPAWN_X, SPAWN_Y = -2.0, -0.5
 RED_DROP_ZONE = (-2.0, -0.5)
-BLUE_DROP_ZONE = (2.0, 2.0)
+BLUE_DROP_ZONE = (-2.0, 1.5)
 
 PATROL_POINTS = [
     (1.5, -0.5), (1.0, 0.5), (1.5, 0.5), (1.5, 1.5),

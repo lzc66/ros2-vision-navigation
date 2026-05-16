@@ -46,17 +46,17 @@ class VisionNode(Node):
         half_w = w / 2.0
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        # ---- Red: two ranges around 0/180 ----
-        red_ranges = [([0, 80, 80], [10, 255, 255]),
-                      ([170, 80, 80], [180, 255, 255])]
+        # ---- Red: two ranges, relaxed saturation for Gazebo glare ----
+        red_ranges = [([0, 50, 50], [10, 255, 255]),
+                      ([170, 50, 50], [180, 255, 255])]
         red_mask = self._build_mask(hsv, red_ranges)
 
         # ---- Blue: single range ----
         blue_ranges = [([100, 80, 80], [130, 255, 255])]
         blue_mask = self._build_mask(hsv, blue_ranges)
 
-        # ---- Brown/Orange (barrel): routes to blue zone ----
-        brown_ranges = [([10, 80, 50], [30, 255, 200])]
+        # ---- Brown/Orange (barrel): tightened to avoid red overlap ----
+        brown_ranges = [([12, 60, 50], [30, 255, 200])]
         brown_mask = self._build_mask(hsv, brown_ranges)
 
         best_type = 0.0
