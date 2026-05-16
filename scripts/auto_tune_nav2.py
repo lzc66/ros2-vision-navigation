@@ -22,7 +22,16 @@ CMD_VEL_TIMEOUT = 12.0
 GOAL_TOLERANCE = 0.40
 COLLISION_CHECK_INTERVAL = 0.5
 
-SAFE_GOALS = [(1.5, -0.5), (1.0, 0.5)]
+SAFE_GOALS = [
+    (1.5, -0.5),   # straight east, simple
+    (1.0, 0.5),    # slight diagonal
+    (1.5, 0.5),    # diagonal through cylinder gap
+    (1.5, 1.5),    # diagonal crossing y=0 and y=1.1 cylinder rows
+    (0.0, 1.8),    # north through center column gap
+    (2.0, 0.0),    # far east past cylinder column
+    (-1.5, 1.5),   # northwest diagonal
+    (0.5, -1.8),   # southeast
+]
 
 SPAWN_X, SPAWN_Y = -2.0, -0.5
 INIT_POSE_X = SPAWN_X   # map==world, no offset
@@ -42,6 +51,8 @@ class IterResult:
     iteration: int
     max_vel_x: float
     inflation_radius: float
+    goal_x: float
+    goal_y: float
     score: float
     elapsed_time: float
     reached_goal: bool
@@ -64,9 +75,10 @@ def is_goal_safe(gx, gy):
 
 
 def pick_goal():
-    for gw in SAFE_GOALS:
-        if is_goal_safe(gw[0], gw[1]):
-            return gw
+    """Randomly select a verified safe goal. Requires actual obstacle avoidance."""
+    valid = [g for g in SAFE_GOALS if is_goal_safe(g[0], g[1])]
+    if valid:
+        return random.choice(valid)
     return SAFE_GOALS[0]
 
 
@@ -298,6 +310,7 @@ def run_iteration(iter_num, max_vel_x, inflation_radius) -> IterResult:
     kill_all()
 
     return IterResult(iteration=iter_num, max_vel_x=max_vel_x, inflation_radius=inflation_radius,
+                      goal_x=gx, goal_y=gy,
                       score=score, elapsed_time=elapsed, reached_goal=reached,
                       plan_failure=plan_failure, stuck_failure=stuck_failure,
                       final_x=fx, final_y=fy)
@@ -362,12 +375,13 @@ def main():
     best = max(all_results, key=lambda r: r.score)
     modify_params(best.max_vel_x, best.inflation_radius)
     print(f"\nBEST: v={best.max_vel_x:.2f} r={best.inflation_radius:.2f} score={best.score:.1f}")
-    print(f"\n{'Iter':<6} {'v':<8} {'r':<8} {'Score':<10} {'Time':<8} {'Reached':<8} {'PFail':<7} {'Stuck':<7}")
-    print("-"*60)
+    print(f"\n{'Iter':<6} {'v':<7} {'r':<7} {'Goal':<14} {'Score':<9} {'Time':<7} {'Reached':<8} {'Stuck':<7}")
+    print("-"*72)
     for r in all_results:
-        print(f"{r.iteration:<6} {r.max_vel_x:<8.2f} {r.inflation_radius:<8.2f} "
-              f"{r.score:<10.1f} {r.elapsed_time:<8.1f} {str(r.reached_goal):<8} "
-              f"{str(r.plan_failure):<7} {str(r.stuck_failure):<7}")
+        goal_str = f"({r.goal_x:.1f},{r.goal_y:.1f})"
+        print(f"{r.iteration:<6} {r.max_vel_x:<7.2f} {r.inflation_radius:<7.2f} "
+              f"{goal_str:<14} {r.score:<9.1f} {r.elapsed_time:<7.1f} "
+              f"{str(r.reached_goal):<8} {str(r.stuck_failure):<7}")
 
 
 if __name__ == '__main__':
