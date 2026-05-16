@@ -168,6 +168,10 @@ class BrainNode(Node):
         self.state = 'GRAB'
         cname = 'RED' if self._target_type < 1.5 else 'BLUE/BRN'
         self.get_logger().info(f'[GRAB] Loading {cname} cargo... (3s)')
+        # Stage 7: Kill Nav2 ghost pedal before stopping
+        if self._goal_handle is not None:
+            self._goal_handle.cancel_goal_async()
+            self._goal_handle = None
         self._stop_robot()
         self._grab_timer = self.create_timer(GRAB_DURATION, self._grab_done)
 

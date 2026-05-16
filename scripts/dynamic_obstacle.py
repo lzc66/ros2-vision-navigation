@@ -68,7 +68,7 @@ class DynamicObstacle(Node):
             self._y_pos = -0.5
             self._dy = abs(self._dy)
 
-        cli = self.create_client(SetEntityState, '/gazebo/set_entity_state')
+        cli = self.create_client(SetEntityState, '/set_entity_state')
         if not cli.wait_for_service(timeout_sec=0.5):
             return
 
