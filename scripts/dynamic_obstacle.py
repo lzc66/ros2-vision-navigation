@@ -30,6 +30,7 @@ class DynamicObstacle(Node):
   <model name="moving_worker">
     <pose>0.0 0.5 0.75 0 0 0</pose>
     <link name="link">
+      <kinematic>true</kinematic>
       <inertial><mass>100.0</mass><inertia><ixx>10</ixx><iyy>10</iyy><izz>10</izz></inertia></inertial>
       <collision name="c">
         <geometry><cylinder><radius>0.2</radius><length>1.5</length></cylinder></geometry>

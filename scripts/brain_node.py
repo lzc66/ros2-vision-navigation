@@ -66,6 +66,7 @@ class BrainNode(Node):
         self._last_vision_t = 0.0
 
         self._lock_timer = None
+        self._escape_timer = None
         self._last_tx = None; self._last_ty = None
 
         self.get_logger().info('Brain ready. EXPLORE (ESCAPE + Dynamic Obstacle)')
@@ -190,16 +191,28 @@ class BrainNode(Node):
         self.get_logger().info('[DROP] Done! Starting ESCAPE turn...')
         self._start_escape()
 
-    # ============ ESCAPE (Stage 6: 180deg turn) ============
+    # ============ ESCAPE (Stage 6.5: continuous twist @10Hz) ============
     def _start_escape(self):
         self.state = 'ESCAPE'
-        self.get_logger().info(f'[ESCAPE] Turning 180deg for {ESCAPE_DURATION}s...')
+        self.get_logger().info(f'[ESCAPE] Turning 180deg for {ESCAPE_DURATION}s (10Hz burst)...')
+        self._escape_start_time = time.time()
+        # High-frequency timer to defeat velocity_smoother 1s timeout
+        self._escape_timer = self.create_timer(0.1, self._publish_escape_twist)
+        self.create_timer(ESCAPE_DURATION, self._escape_done, one_shot=True)
+
+    def _publish_escape_twist(self):
+        if self.state != 'ESCAPE':
+            return
+        if time.time() - self._escape_start_time > ESCAPE_DURATION:
+            return
         twist = Twist()
         twist.angular.z = ESCAPE_ANGULAR
         self.cmd_pub.publish(twist)
-        self.create_timer(ESCAPE_DURATION, self._escape_done, one_shot=True)
 
     def _escape_done(self):
+        if self._escape_timer is not None:
+            self._escape_timer.cancel()
+            self._escape_timer = None
         self._stop_robot()
         self.get_logger().info('[ESCAPE] Turn complete! FOV cleared. Restarting EXPLORE.')
         self._start_explore()
