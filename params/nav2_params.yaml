@@ -152,7 +152,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.4
+        inflation_radius: 0.15
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
@@ -187,7 +187,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.4
+        inflation_radius: 0.15
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
@@ -234,9 +234,8 @@ planner_server:
       max_planning_duration: 5.0
       cost_travel_multiplier: 2.0
       use_final_approach_orientation: false
-      motion_model_for_search: "DUBIN"
+      motion_model_for_search: "MOORE"
       angle_quantization_bins: 72
-      minimum_turning_radius: 0.2
       analytic_expansion_ratio: 3.5
 
 planner_server_rclcpp_node:
