@@ -3,11 +3,12 @@
 Auto-tune Nav2 parameters: 5 iterations of closed-loop simulation.
 Tunes: max_vel_x [0.20, 0.60], inflation_radius [0.10, 0.20]
 
-Stage 2 Debug v2 Fixes:
-  - Safe goals: world(1.0, 0.5) or world(1.5, -0.5) - clear area between cylinders
-  - cost_scaling_factor: 12.0 (sharp cost drop, clear corridors)
-  - DWA: sim_time=2.0, xy_tol=0.15, yaw_tol=0.20
-  - Fast-fail: if amcl_pose moves <0.1m over 15s with active cmd_vel, fail immediately
+TF Frame Fix: ALL goal arrival checks use amcl_pose (MAP frame) exclusively.
+odom frame is NEVER used for distance computation — it was causing premature
+goal-detection kills by confusing odom local coords with world/map coords.
+
+Controller: RPP  |  Planner: NavFn  |  cost_scaling: 12.0
+Safe goals: world(1.5, -0.5) or world(1.0, 0.5)
 """
 import os, re, sys, time, signal, subprocess, math, random
 from dataclasses import dataclass
@@ -23,22 +24,17 @@ INFLATION_MIN, INFLATION_MAX = 0.10, 0.20
 # === Simulation ===
 MAX_TIME = 90.0
 CMD_VEL_TIMEOUT = 12.0
-FAST_FAIL_STUCK_TIME = 15.0   # If moves <0.1m in this window with cmd_vel active -> fail
-FAST_FAIL_MIN_DIST = 0.10
-
-# === Fixed Safe Goals (between cylinders, away from hexagon boundaries) ===
-SAFE_GOALS = [
-    (1.5, -0.5),   # Primary: clear path, far from hexagons
-    (1.0, 0.5),    # Backup: golden clear area
-]
-GOAL_TOLERANCE = 0.4
+GOAL_TOLERANCE = 0.25        # in MAP frame (meters)
 COLLISION_CHECK_INTERVAL = 0.5
+
+# === Safe Goals (world coords) ===
+SAFE_GOALS = [(1.5, -0.5), (1.0, 0.5)]
 
 # === Hard Constraints ===
 MAP_ORIGIN_X, MAP_ORIGIN_Y = -5.0, -5.0
 SPAWN_WX, SPAWN_WY = -2.0, -0.5
-INIT_POSE_MAP_X = SPAWN_WX - MAP_ORIGIN_X
-INIT_POSE_MAP_Y = SPAWN_WY - MAP_ORIGIN_Y
+INIT_POSE_MAP_X = SPAWN_WX - MAP_ORIGIN_X   # 3.0
+INIT_POSE_MAP_Y = SPAWN_WY - MAP_ORIGIN_Y   # 4.5
 
 CYLINDERS = [(x, y) for x in [-1.1, 0.0, 1.1] for y in [-1.1, 0.0, 1.1]]
 CYLINDER_RADIUS = 0.15
@@ -57,11 +53,10 @@ class IterResult:
     score: float
     elapsed_time: float
     reached_goal: bool
-    collision: bool
     plan_failure: bool
     stuck_failure: bool
-    final_x: float
-    final_y: float
+    final_map_x: float
+    final_map_y: float
 
 
 def world_to_map(wx, wy):
@@ -81,7 +76,6 @@ def is_goal_safe(wx, wy):
 
 
 def pick_goal():
-    """Pick a verified safe goal from the approved list."""
     for gw in SAFE_GOALS:
         if is_goal_safe(gw[0], gw[1]):
             return gw
@@ -91,15 +85,12 @@ def pick_goal():
 def modify_params(max_vel_x, inflation_radius):
     with open(NAV2_PARAMS, 'r') as f:
         content = f.read()
-    # RPP controller params
     content = re.sub(r'(FollowPath:\n(?:.*\n)*?\s{4,8}desired_linear_vel:\s*)[0-9.]+',
                      f'\\g<1>{max_vel_x}', content, count=1)
     content = re.sub(r'(FollowPath:\n(?:.*\n)*?\s{4,8}max_linear_vel:\s*)[0-9.]+',
                      f'\\g<1>{max_vel_x}', content, count=1)
-    # velocity_smoother
     content = re.sub(r'(velocity_smoother:\n(?:.*\n)*?\s{4,8}max_velocity:\s*\[)[0-9.]+,',
                      f'\\g<1>{max_vel_x},', content, count=1)
-    # inflation_radius in both costmaps
     content = re.sub(r'(local_costmap:\n(?:.*\n)*?\s{6,10}inflation_radius:\s*)[0-9.]+',
                      f'\\g<1>{inflation_radius}', content, count=1)
     content = re.sub(r'(global_costmap:\n(?:.*\n)*?\s{6,10}inflation_radius:\s*)[0-9.]+',
@@ -115,6 +106,33 @@ def kill_all():
     subprocess.run(['pkill', '-9', '-f', 'gzserver'], capture_output=True)
     subprocess.run(['pkill', '-9', '-f', 'gzclient'], capture_output=True)
     time.sleep(3)
+
+
+def _get_amcl_pose():
+    """Get AMCL estimated position in MAP frame."""
+    try:
+        result = subprocess.run([
+            'ros2', 'topic', 'echo', '/amcl_pose', '--once', '--field', 'pose.pose.position'
+        ], capture_output=True, text=True, timeout=3, env=os.environ)
+        match = re.search(r'x:\s*([\d.-]+)\s*\n\s*y:\s*([\d.-]+)', result.stdout)
+        if match:
+            return float(match.group(1)), float(match.group(2))
+    except Exception:
+        pass
+    return None, None
+
+
+def _get_cmd_vel_active():
+    try:
+        result = subprocess.run([
+            'ros2', 'topic', 'echo', '/cmd_vel', '--once', '--field', 'linear.x'
+        ], capture_output=True, text=True, timeout=3, env=os.environ)
+        match = re.search(r'(-?[\d.]+)', result.stdout)
+        if match:
+            return abs(float(match.group(1))) > 0.001
+    except Exception:
+        pass
+    return False
 
 
 def _send_initial_pose():
@@ -140,21 +158,7 @@ def _send_initial_pose():
         return False
 
 
-def _get_amcl_pose():
-    """Get AMCL estimated map position."""
-    try:
-        result = subprocess.run([
-            'ros2', 'topic', 'echo', '/amcl_pose', '--once', '--field', 'pose.pose.position'
-        ], capture_output=True, text=True, timeout=3, env=os.environ)
-        match = re.search(r'x:\s*([\d.-]+)\s*\n\s*y:\s*([\d.-]+)', result.stdout)
-        if match:
-            return float(match.group(1)), float(match.group(2))
-    except Exception:
-        pass
-    return None, None
-
-
-def _verify_amcl_converged(timeout=10.0):
+def _verify_amcl(timeout=10.0):
     print("[AMCL] Verifying convergence...")
     start = time.time()
     while time.time() - start < timeout:
@@ -169,40 +173,12 @@ def _verify_amcl_converged(timeout=10.0):
     return False
 
 
-def _get_cmd_vel_active():
-    """Check if /cmd_vel has non-zero velocity."""
-    try:
-        result = subprocess.run([
-            'ros2', 'topic', 'echo', '/cmd_vel', '--once', '--field', 'linear.x'
-        ], capture_output=True, text=True, timeout=3, env=os.environ)
-        match = re.search(r'(-?[\d.]+)', result.stdout)
-        if match:
-            return abs(float(match.group(1))) > 0.001
-    except Exception:
-        pass
-    return False
-
-
-def _get_odom():
-    try:
-        result = subprocess.run([
-            'ros2', 'topic', 'echo', '/odom', '--once', '--field', 'pose.pose.position'
-        ], capture_output=True, text=True, timeout=3, env=os.environ)
-        match = re.search(r'x:\s*([\d.-]+)\s*\n\s*y:\s*([\d.-]+)', result.stdout)
-        if match:
-            return float(match.group(1)), float(match.group(2))
-    except Exception:
-        pass
-    return None, None
-
-
-def _send_nav_goal(goal_wx, goal_wy, timeout_sec):
-    """Send nav goal + monitor with fast-fail on stuck-with-cmd_vel."""
-    goal_mx, goal_my = world_to_map(goal_wx, goal_wy)
-    # odom reports in world coordinates (Gazebo frame), so use world coords directly
+def _send_nav_goal(goal_mx, goal_my, timeout_sec):
+    """Send nav goal + monitor. ALL distance checks use amcl_pose in MAP frame."""
     result = {
-        'reached': False, 'collision': False, 'elapsed': timeout_sec,
-        'final_x': 0.0, 'final_y': 0.0, 'plan_failure': False, 'stuck_failure': False
+        'reached': False, 'elapsed': timeout_sec,
+        'final_map_x': 0.0, 'final_map_y': 0.0,
+        'plan_failure': False, 'stuck_failure': False
     }
     start_time = time.time()
 
@@ -216,14 +192,11 @@ def _send_nav_goal(goal_wx, goal_wy, timeout_sec):
                            text=True, env=os.environ)
 
     cmd_vel_dead_time = 0.0
-    initial_amcl_pose = None
-    collision_detected = False
-    plan_failure = False
-    stuck_failure = False
+    initial_amcl = None
     first_cmd_vel = True
 
     while time.time() - start_time < timeout_sec:
-        # --- cmd_vel monitoring ---
+        # --- cmd_vel check ---
         has_cmd_vel = _get_cmd_vel_active()
         if has_cmd_vel:
             cmd_vel_dead_time = 0.0
@@ -233,53 +206,50 @@ def _send_nav_goal(goal_wx, goal_wy, timeout_sec):
         else:
             cmd_vel_dead_time += COLLISION_CHECK_INTERVAL
             if cmd_vel_dead_time > CMD_VEL_TIMEOUT and time.time() - start_time > 15.0:
-                print(f"  [FAIL] No cmd_vel for {cmd_vel_dead_time:.0f}s - plan failure!")
-                plan_failure = True
+                print(f"  [FAIL] No cmd_vel for {cmd_vel_dead_time:.0f}s")
                 result['plan_failure'] = True
                 break
 
-        # --- AMCL pose tracking for stuck detection ---
+        # --- AMCL pose: goal arrival detection (MAP frame) ---
         amcl_pos = _get_amcl_pose()
         if amcl_pos[0] is not None:
-            if initial_amcl_pose is None:
-                initial_amcl_pose = amcl_pos
-            # Total cumulative movement since start
-            total_dist = math.sqrt(
-                (amcl_pos[0] - initial_amcl_pose[0])**2 +
-                (amcl_pos[1] - initial_amcl_pose[1])**2
-            )
-            # After significant time, if barely moved and cmd_vel active -> stuck
-            if time.time() - start_time > 30.0 and total_dist < 0.3 and has_cmd_vel:
-                print(f"  [STUCK] AMCL pose moved only {total_dist:.2f}m in {time.time()-start_time:.0f}s with active cmd_vel!")
-                print(f"  [STUCK] Robot is spinning/blocked - fast fail!")
-                stuck_failure = True
-                result['stuck_failure'] = True
-                break
+            result['final_map_x'] = amcl_pos[0]
+            result['final_map_y'] = amcl_pos[1]
 
-        # --- Odometry goal check (world coords) ---
-        odom_pos = _get_odom()
-        if odom_pos[0] is not None:
-            result['final_x'] = odom_pos[0]
-            result['final_y'] = odom_pos[1]
-            # odom reports Gazebo world coordinates, compare directly with world goal
-            dist = math.sqrt((odom_pos[0] - goal_wx)**2 + (odom_pos[1] - goal_wy)**2)
-            if dist < GOAL_TOLERANCE:
+            if initial_amcl is None:
+                initial_amcl = amcl_pos
+
+            # GOAL CHECK in MAP frame — the ONLY distance check
+            dist_to_goal = math.sqrt(
+                (amcl_pos[0] - goal_mx)**2 + (amcl_pos[1] - goal_my)**2
+            )
+            if dist_to_goal < GOAL_TOLERANCE:
                 result['reached'] = True
                 result['elapsed'] = time.time() - start_time
+                print(f"  [ARRIVED] amcl at map({amcl_pos[0]:.2f}, {amcl_pos[1]:.2f}), dist={dist_to_goal:.3f}m < {GOAL_TOLERANCE}m")
+                break
+
+            # Stuck detection: total movement since start
+            total_dist = math.sqrt(
+                (amcl_pos[0] - initial_amcl[0])**2 + (amcl_pos[1] - initial_amcl[1])**2
+            )
+            elapsed_check = time.time() - start_time
+            if elapsed_check > 30.0 and total_dist < 0.3 and has_cmd_vel:
+                print(f"  [STUCK] AMCL moved {total_dist:.2f}m in {elapsed_check:.0f}s with cmd_vel!")
+                result['stuck_failure'] = True
                 break
 
         if proc.poll() is not None:
             break
         time.sleep(COLLISION_CHECK_INTERVAL)
 
-    if not result['reached'] and not collision_detected and not plan_failure and not stuck_failure:
+    if not result['reached'] and not result['plan_failure'] and not result['stuck_failure']:
         result['elapsed'] = timeout_sec
 
     if proc.poll() is None:
         proc.terminate()
         try: proc.wait(timeout=2)
         except subprocess.TimeoutExpired: proc.kill()
-
     return result
 
 
@@ -294,12 +264,8 @@ def run_iteration(iter_num, max_vel_x, inflation_radius) -> IterResult:
     print(f"{'='*60}")
 
     print("[BUILD] Building...")
-    build_result = subprocess.run(
-        ['colcon', 'build', '--packages-select', 'project', '--symlink-install'],
-        cwd=WS_DIR, capture_output=True, text=True, timeout=120
-    )
-    if 'failed' in build_result.stderr.lower():
-        print(f"[WARN] Build errors: {build_result.stderr[-200:]}")
+    subprocess.run(['colcon', 'build', '--packages-select', 'project', '--symlink-install'],
+                   cwd=WS_DIR, capture_output=True, text=True, timeout=120)
 
     print("[LAUNCH] Starting navigation simulation...")
     env = os.environ.copy()
@@ -316,39 +282,34 @@ def run_iteration(iter_num, max_vel_x, inflation_radius) -> IterResult:
 
     print("[INIT] Waiting for system (25s)...")
     time.sleep(25)
-
     _send_initial_pose()
     time.sleep(2)
-    _verify_amcl_converged(timeout=8.0)
+    _verify_amcl(timeout=8.0)
 
-    print(f"[GOAL] Sending goal: world({goal_wx:.1f}, {goal_wy:.1f})...")
-    goal_result = _send_nav_goal(goal_wx, goal_wy, MAX_TIME)
+    print(f"[GOAL] Navigating to map({goal_mx:.1f}, {goal_my:.1f})...")
+    goal_result = _send_nav_goal(goal_mx, goal_my, MAX_TIME)
 
     reached = goal_result['reached']
-    collision = goal_result['collision']
     plan_failure = goal_result['plan_failure']
     stuck_failure = goal_result['stuck_failure']
     elapsed = goal_result['elapsed']
-    final_x = goal_result['final_x']
-    final_y = goal_result['final_y']
+    final_mx = goal_result['final_map_x']
+    final_my = goal_result['final_map_y']
 
     # Scoring
     if stuck_failure:
         score = 0.0
-        print(f"[RESULT] STUCK FAILURE (amcl_pose drift <0.1m)! Score: {score}")
+        print(f"[RESULT] STUCK FAILURE! Score: {score}")
     elif plan_failure:
         score = 0.0
-        print(f"[RESULT] PLAN FAILURE (no cmd_vel)! Score: {score}")
-    elif collision:
-        score = 0.0
-        print(f"[RESULT] COLLISION! Score: {score}")
+        print(f"[RESULT] PLAN FAILURE! Score: {score}")
     elif reached:
         score = (MAX_TIME - elapsed) * 10.0
         print(f"[RESULT] GOAL REACHED in {elapsed:.1f}s! Score: {score:.1f}")
     else:
         score = 10.0
-        dist = math.sqrt((final_x - goal_wx)**2 + (final_y - goal_wy)**2)
-        print(f"[RESULT] TIMEOUT. Dist to goal: {dist:.2f}m. Score: {score}")
+        dist = math.sqrt((final_mx - goal_mx)**2 + (final_my - goal_my)**2)
+        print(f"[RESULT] TIMEOUT. Dist to goal: {dist:.2f}m (map). Score: {score}")
 
     print("[CLEANUP] Killing all processes...")
     if proc.poll() is None:
@@ -358,29 +319,26 @@ def run_iteration(iter_num, max_vel_x, inflation_radius) -> IterResult:
 
     return IterResult(
         iteration=iter_num, max_vel_x=max_vel_x, inflation_radius=inflation_radius,
-        score=score, elapsed_time=elapsed, reached_goal=reached, collision=collision,
+        score=score, elapsed_time=elapsed, reached_goal=reached,
         plan_failure=plan_failure, stuck_failure=stuck_failure,
-        final_x=final_x, final_y=final_y
+        final_map_x=final_mx, final_map_y=final_my
     )
 
 
 def heuristic_next_params(iter_num, all_results):
     if iter_num == 1:
         return 0.30, 0.15
-
     best = max(all_results, key=lambda r: r.score)
     last = all_results[-1]
     candidates = []
 
     if last.stuck_failure or last.plan_failure:
-        # Reduce speed, try different inflation
         candidates.append((max(0.20, last.max_vel_x - 0.06), min(INFLATION_MAX, last.inflation_radius + 0.03)))
         candidates.append((max(0.20, last.max_vel_x - 0.03), min(INFLATION_MAX, last.inflation_radius + 0.02)))
     elif last.reached_goal:
         candidates.append((min(MAX_VEL_X_MAX, last.max_vel_x + 0.08), last.inflation_radius))
         candidates.append((min(MAX_VEL_X_MAX, last.max_vel_x + 0.05), max(INFLATION_MIN, last.inflation_radius - 0.03)))
     else:
-        # Timeout - vary speed and inflation
         candidates.append((min(MAX_VEL_X_MAX, last.max_vel_x + 0.06), last.inflation_radius))
         candidates.append((last.max_vel_x, max(INFLATION_MIN, last.inflation_radius - 0.03)))
         candidates.append((min(MAX_VEL_X_MAX, last.max_vel_x + 0.04), max(INFLATION_MIN, last.inflation_radius - 0.02)))
@@ -395,7 +353,6 @@ def heuristic_next_params(iter_num, all_results):
     for v, r in valid:
         if (v, r) not in used:
             return round(v, 2), round(r, 2)
-
     while True:
         v = round(random.uniform(MAX_VEL_X_MIN, MAX_VEL_X_MAX), 2)
         r = round(random.uniform(INFLATION_MIN, INFLATION_MAX), 2)
@@ -415,11 +372,10 @@ def git_commit(iter_num, max_vel_x, radius, score):
 
 def main():
     print("=" * 70)
-    print("Nav2 Auto-Tuning: 5 Iterations [Stage 2 Debug v2]")
+    print("Nav2 Auto-Tuning: 5 Iterations [TF Frame Fix]")
     print(f"  Spawn: world({SPAWN_WX}, {SPAWN_WY})  |  Bounds: [{BOUND_X_MIN},{BOUND_X_MAX}]")
-    print(f"  inflation_radius: [{INFLATION_MIN}, {INFLATION_MAX}]  |  cost_scaling: 12.0")
-    print(f"  DWA: sim_time=2.0, xy_tol=0.15, yaw_tol=0.20")
-    print(f"  Fast-fail: <{FAST_FAIL_MIN_DIST:.2f}m in {FAST_FAIL_STUCK_TIME:.0f}s = stuck")
+    print(f"  inflation: [{INFLATION_MIN}, {INFLATION_MAX}]  |  cost_scaling: 12.0")
+    print(f"  Goal tolerance: {GOAL_TOLERANCE}m (MAP frame via amcl_pose)")
     print(f"  Safe goals: {SAFE_GOALS}")
     print("=" * 70)
 
@@ -434,7 +390,7 @@ def main():
         result = run_iteration(iteration, max_vel, inflation)
         all_results.append(result)
         git_commit(iteration, max_vel, inflation, result.score)
-        print(f"\n[ITER {iteration} SUMMARY] v={max_vel:.2f} r={inflation:.2f} "
+        print(f"\n[ITER {iteration}] v={max_vel:.2f} r={inflation:.2f} "
               f"score={result.score:.1f} reached={result.reached_goal} "
               f"plan_fail={result.plan_failure} stuck={result.stuck_failure} t={result.elapsed_time:.1f}s")
 
@@ -444,12 +400,12 @@ def main():
     print(f"BEST: max_vel_x={best.max_vel_x:.2f}  inflation_radius={best.inflation_radius:.2f}  Score={best.score:.1f}")
     print(f"{'='*70}")
 
-    print(f"\n{'Iter':<6} {'v':<8} {'r':<8} {'Score':<10} {'Time':<8} {'Reached':<8} {'PlanFail':<9} {'StuckFail':<10}")
-    print("-" * 75)
+    print(f"\n{'Iter':<6} {'v':<8} {'r':<8} {'Score':<10} {'Time':<8} {'Reached':<8} {'PlanFail':<9} {'Stuck':<8}")
+    print("-" * 70)
     for r in all_results:
         print(f"{r.iteration:<6} {r.max_vel_x:<8.2f} {r.inflation_radius:<8.2f} "
               f"{r.score:<10.1f} {r.elapsed_time:<8.1f} {str(r.reached_goal):<8} "
-              f"{str(r.plan_failure):<9} {str(r.stuck_failure):<10}")
+              f"{str(r.plan_failure):<9} {str(r.stuck_failure):<8}")
 
 
 if __name__ == '__main__':

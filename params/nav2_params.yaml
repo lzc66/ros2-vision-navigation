@@ -94,8 +94,8 @@ controller_server:
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.54
-      max_linear_vel: 0.54
+      desired_linear_vel: 0.3
+      max_linear_vel: 0.3
       min_linear_vel: 0.0
       lookahead_dist: 0.4
       max_lookahead_dist: 0.8
@@ -261,7 +261,7 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: "OPEN_LOOP"
-    max_velocity: [0.54, 0.0, 1.0]
+    max_velocity: [0.3, 0.0, 1.0]
     min_velocity: [-0.26, 0.0, -1.0]
     max_accel: [2.5, 0.0, 3.2]
     max_decel: [-2.5, 0.0, -3.2]
