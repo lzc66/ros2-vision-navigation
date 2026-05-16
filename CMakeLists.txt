@@ -38,6 +38,7 @@ install(PROGRAMS
   scripts/generate_map.py
   scripts/vision_node.py
   scripts/brain_node.py
+  scripts/dynamic_obstacle.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

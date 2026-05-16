@@ -92,6 +92,10 @@ def generate_launch_description():
     item_spawner = Node(package='project', executable='item_spawner.py',
                         name='item_spawner', output='screen')
 
+    # Stage 6: Dynamic obstacle (moving worker)
+    dynamic_obstacle = Node(package='project', executable='dynamic_obstacle.py',
+                            name='dynamic_obstacle', output='screen')
+
     return LaunchDescription([
         use_sim_time, set_model_path,
         gzserver,
@@ -104,4 +108,5 @@ def generate_launch_description():
             lifecycle_mgr_nav,
         ]),
         TimerAction(period=12.0, actions=[vision_node, brain_node, item_spawner]),
+        TimerAction(period=14.0, actions=[dynamic_obstacle]),
     ])
