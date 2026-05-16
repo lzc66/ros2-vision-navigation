@@ -28,11 +28,21 @@ def generate_launch_description():
 
     use_sim_time = SetParameter(name='use_sim_time', value=True)
 
+    # Stage 8: Dynamic World Injection for gazebo_ros_state plugin
+    dyn_world = '/tmp/dynamic_world_nav.world'
+    with open(world_file, 'r') as f:
+        world_xml = f.read()
+    world_xml = world_xml.replace(
+        '</world>',
+        '  <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so"/>\n</world>'
+    )
+    with open(dyn_world, 'w') as f:
+        f.write(world_xml)
+
     # Gazebo headless (WSL2: no gzclient for GPU stability)
     gzserver = ExecuteProcess(
-        cmd=['gzserver', '--verbose', world_file,
-             '-s', 'libgazebo_ros_init.so', '-s', 'libgazebo_ros_factory.so',
-             '-s', 'libgazebo_ros_state.so'],
+        cmd=['gzserver', '--verbose', dyn_world,
+             '-s', 'libgazebo_ros_init.so', '-s', 'libgazebo_ros_factory.so'],
         output='screen'
     )
 

@@ -1,4 +1,4 @@
-"""One-click bringup: Gazebo + Nav2 + Vision + Brain."""
+"""One-click bringup: Gazebo + Nav2 + Vision + Brain + Dynamic Obstacle."""
 import os
 from launch import LaunchDescription
 from launch.actions import ExecuteProcess, SetEnvironmentVariable, TimerAction
@@ -25,11 +25,22 @@ def generate_launch_description():
 
     use_sim_time = SetParameter(name='use_sim_time', value=True)
 
-    # Gazebo
+    # === Stage 8: Dynamic World Injection ===
+    # Inject gazebo_ros_state plugin directly into the world XML
+    dyn_world = '/tmp/dynamic_world.world'
+    with open(world_file, 'r') as f:
+        world_xml = f.read()
+    world_xml = world_xml.replace(
+        '</world>',
+        '  <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so"/>\n</world>'
+    )
+    with open(dyn_world, 'w') as f:
+        f.write(world_xml)
+
+    # Gazebo (no -s state plugin — injected into world XML instead)
     gzserver = ExecuteProcess(
-        cmd=['gzserver', '--verbose', world_file,
-             '-s', 'libgazebo_ros_init.so', '-s', 'libgazebo_ros_factory.so',
-             '-s', 'libgazebo_ros_state.so'],
+        cmd=['gzserver', '--verbose', dyn_world,
+             '-s', 'libgazebo_ros_init.so', '-s', 'libgazebo_ros_factory.so'],
         output='screen'
     )
 
