@@ -5,9 +5,7 @@ testing Nav2's DWA local planner ability to avoid dynamic obstacles.
 """
 import rclpy
 from rclpy.node import Node
-from gazebo_msgs.srv import SpawnEntity, DeleteEntity, SetEntityState
-from gazebo_msgs.msg import EntityState
-from geometry_msgs.msg import Pose, Twist
+from gazebo_msgs.srv import SpawnEntity, SetEntityState
 import math
 import time
 
@@ -15,6 +13,7 @@ import time
 class DynamicObstacle(Node):
     def __init__(self):
         super().__init__('dynamic_obstacle')
+        self._state_cli = self.create_client(SetEntityState, '/set_entity_state')
         self._spawn_worker()
         self._last_time = time.time()
         self._y_pos = 0.5
@@ -68,8 +67,7 @@ class DynamicObstacle(Node):
             self._y_pos = -0.5
             self._dy = abs(self._dy)
 
-        cli = self.create_client(SetEntityState, '/set_entity_state')
-        if not cli.wait_for_service(timeout_sec=0.5):
+        if not self._state_cli.service_is_ready():
             return
 
         req = SetEntityState.Request()
@@ -79,7 +77,7 @@ class DynamicObstacle(Node):
         req.state.pose.position.z = 0.75
         req.state.pose.orientation.w = 1.0
         req.state.reference_frame = 'world'
-        cli.call_async(req)  # fire-and-forget
+        self._state_cli.call_async(req)  # reuse single client
 
 
 def main():
