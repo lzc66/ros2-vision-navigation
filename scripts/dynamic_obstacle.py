@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """
 Dynamic Obstacle: a moving worker cylinder that oscillates across the central corridor,
 testing Nav2's DWA local planner ability to avoid dynamic obstacles.

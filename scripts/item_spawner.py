@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 import threading
 import rclpy
 from rclpy.node import Node
@@ -55,7 +55,7 @@ class ItemSpawner(Node):
 
         self.count += 1
         name = f'{target_type}_{self.count}'
-        sdf = self._make_sdf(name, target_type, x, y, z)
+        sdf = self._make_sdf(name, target_type)
 
         ok = self._gazebo_client.spawn(name, sdf, x, y, z)
 
@@ -72,17 +72,17 @@ class ItemSpawner(Node):
 
         return response
 
-    def _make_sdf(self, name, target_type, x, y, z):
+    def _make_sdf(self, name, target_type):
         if target_type == 'box':
-            return self._box_sdf(name, x, y, z)
+            return self._box_sdf(name)
         else:
-            return self._barrel_sdf(name, x, y, z)
+            return self._barrel_sdf(name)
 
-    def _box_sdf(self, name, x, y, z):
+    def _box_sdf(self, name):
         return f'''<?xml version="1.0"?>
 <sdf version="1.7">
   <model name="{name}">
-    <pose>{x} {y} {z} 0 0 0</pose>
+    <pose>0 0 0 0 0 0</pose>
     <link name="link">
       <inertial>
         <mass>1.0</mass>
@@ -115,11 +115,11 @@ class ItemSpawner(Node):
   </model>
 </sdf>'''
 
-    def _barrel_sdf(self, name, x, y, z):
+    def _barrel_sdf(self, name):
         return f'''<?xml version="1.0"?>
 <sdf version="1.7">
   <model name="{name}">
-    <pose>{x} {y} {z} 0 0 0</pose>
+    <pose>0 0 0 0 0 0</pose>
     <link name="link">
       <inertial>
         <mass>2.0</mass>

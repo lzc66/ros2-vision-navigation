@@ -44,7 +44,12 @@ def generate_launch_description():
         output='screen'
     )
 
-    # Spawn waffle (headless: no gzclient for WSL2)
+    gzclient = ExecuteProcess(
+        cmd=['gzclient'],
+        output='screen'
+    )
+
+    # Spawn waffle
     tb3_sdf = '/opt/ros/humble/share/turtlebot3_gazebo/models/turtlebot3_waffle/model.sdf'
     spawn_robot = Node(
         package='gazebo_ros', executable='spawn_entity.py',
@@ -110,7 +115,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         use_sim_time, set_model_path,
-        gzserver,
+        gzserver, gzclient,
         TimerAction(period=3.0, actions=[spawn_robot]),
         TimerAction(period=5.0, actions=[robot_state_pub]),
         TimerAction(period=8.0, actions=[

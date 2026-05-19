@@ -39,10 +39,15 @@ def generate_launch_description():
     with open(dyn_world, 'w') as f:
         f.write(world_xml)
 
-    # Gazebo headless (WSL2: no gzclient for GPU stability)
+    # Gazebo with GUI
     gzserver = ExecuteProcess(
         cmd=['gzserver', '--verbose', dyn_world,
              '-s', 'libgazebo_ros_init.so', '-s', 'libgazebo_ros_factory.so'],
+        output='screen'
+    )
+
+    gzclient = ExecuteProcess(
+        cmd=['gzclient'],
         output='screen'
     )
 
@@ -139,7 +144,7 @@ def generate_launch_description():
     return LaunchDescription([
         use_sim_time,
         set_model_path,
-        gzserver,
+        gzserver, gzclient,
         TimerAction(period=3.0, actions=[spawn_robot]),
         TimerAction(period=5.0, actions=[robot_state_pub]),
         TimerAction(period=8.0, actions=[

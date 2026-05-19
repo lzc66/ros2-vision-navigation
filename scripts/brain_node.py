@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """
 Embodied AI Brain: Multi-color sort + self-healing + ESCAPE escape.
 

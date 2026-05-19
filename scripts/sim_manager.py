@@ -7,20 +7,21 @@ import subprocess
 import sys
 import time
 
-WS_DIR = '/home/lzc/ros2_ws'
-PKG_DIR = '/home/lzc/ros2_ws/src/project'
-SETUP_BASH = f'{WS_DIR}/install/setup.bash'
-WRAP = f"bash -c 'source {SETUP_BASH} && {{}}'"
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PKG_DIR = os.path.dirname(_SCRIPT_DIR)
+WS_DIR = os.path.dirname(os.path.dirname(PKG_DIR))
+SETUP_BASH = os.path.join(WS_DIR, 'install', 'setup.bash')
+
 
 _LAUNCH_PROC = None
 
 
 def _ros2(cmd: str, check=True, timeout=None, capture=False):
     """Wrap a ROS 2 command with environment sourcing."""
-    full = WRAP.format(cmd)
+    full = f"source {SETUP_BASH} && {cmd}"
     print(f'[EXEC] {cmd[:120]}...' if len(cmd) > 120 else f'[EXEC] {cmd}')
     try:
-        return subprocess.run(full, shell=True, check=check,
+        return subprocess.run(full, shell=True, executable='/bin/bash', check=check,
                               timeout=timeout, capture_output=capture, text=True)
     except subprocess.CalledProcessError as e:
         print(f'[ERROR] Command failed (exit {e.returncode})')
@@ -41,11 +42,22 @@ def cmd_build(_args):
 # ===================== start =====================
 def cmd_start(_args):
     global _LAUNCH_PROC
-    print('[INFO] Launching system_bringup (headless)...')
+    print('[INFO] Launching system_bringup (GUI)...')
 
     env = os.environ.copy()
+    env['DISPLAY'] = os.environ.get('DISPLAY', ':1')
+    env['PATH'] = '/usr/bin:' + env.get('PATH', '')
+    # Mesa software rendering optimization for headless GPU containers
+    env.setdefault('LIBGL_ALWAYS_SOFTWARE', '1')
+    env.setdefault('GALLIUM_DRIVER', 'llvmpipe')
+    env.setdefault('LP_NUM_THREADS', '4')
+    env.setdefault('vblank_mode', '0')
+    env.setdefault('mesa_glthread', 'true')
+    # CUDA compute (available even when GLX is broken)
+    env.setdefault('CUDA_VISIBLE_DEVICES', '0')
     env['GAZEBO_MODEL_PATH'] = (
-        f'{PKG_DIR}/models:{os.path.expanduser("~")}/.gazebo/models:'
+        os.path.join(PKG_DIR, 'models') + ':' +
+        os.path.join(os.path.expanduser('~'), '.gazebo', 'models') + ':' +
         '/opt/ros/humble/share/turtlebot3_gazebo/models'
     )
     launch_cmd = (

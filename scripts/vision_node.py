@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """
 Visual Perception: dual-color (red + blue) detection with relative metrics.
 
