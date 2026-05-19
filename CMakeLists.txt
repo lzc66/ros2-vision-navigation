@@ -39,6 +39,7 @@ install(PROGRAMS
   scripts/vision_node.py
   scripts/brain_node.py
   scripts/dynamic_obstacle.py
+  scripts/sim_manager.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
